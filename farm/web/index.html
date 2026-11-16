@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Render Farm</title>
+<style>
+  :root { --bg:#0e1014; --panel:#171a21; --line:#2a2f3a; --text:#e6e8ee; --dim:#8b93a3; --accent:#6ea8fe; --danger:#ff6b6b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 system-ui, sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:10px 14px; align-items:center; padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); }
+  h1 { font-size:16px; margin:0 8px 0 0; letter-spacing:.3px; }
+  label { color:var(--dim); display:flex; gap:6px; align-items:center; }
+  select, button, input[type=range] { font:inherit; }
+  select, button { background:#222733; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 10px; }
+  button { cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  button.primary { background:var(--accent); color:#08101f; border-color:var(--accent); font-weight:600; }
+  button.danger { color:var(--danger); border-color:#5a2c2c; }
+  button:disabled { opacity:.5; cursor:default; }
+  main { display:grid; grid-template-columns:minmax(0,1fr) 280px; gap:16px; padding:16px; }
+  @media (max-width: 900px) { main { grid-template-columns:1fr; } }
+  #stage { position:relative; background:#000; border:1px solid var(--line); border-radius:8px; overflow:hidden; line-height:0; touch-action:none; cursor:grab; }
+  #stage.drag { cursor:grabbing; }
+  #stage canvas { width:100%; height:auto; display:block; }
+  #overlay { position:absolute; inset:0; pointer-events:none; }
+  #hint { position:absolute; left:10px; bottom:10px; line-height:1.4; background:#000a; padding:3px 8px; border-radius:5px; color:var(--dim); font-size:12px; }
+  #bar { height:4px; background:var(--line); border-radius:2px; margin:10px 0 6px; overflow:hidden; }
+  #bar div { height:100%; width:0; background:var(--accent); transition:width .5s; }
+  #status { color:var(--dim); font-variant-numeric:tabular-nums; }
+  #status b { color:var(--text); font-weight:600; }
+  aside h2 { font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); margin:0 0 8px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:16px; }
+  .node { display:grid; grid-template-columns:14px 1fr auto; gap:2px 8px; align-items:center; padding:6px 0; border-top:1px solid var(--line); }
+  .node:first-of-type { border-top:0; }
+  .sw { width:12px; height:12px; border-radius:3px; }
+  .node .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .node .sps { font-variant-numeric:tabular-nums; font-weight:600; }
+  .node .sub { grid-column:2 / 4; color:var(--dim); font-size:12px; }
+  .node.dead { opacity:.45; }
+  #gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px; padding:0 16px 24px; }
+  #gallery a { color:var(--dim); text-decoration:none; font-size:12px; }
+  #gallery img { width:100%; border-radius:6px; border:1px solid var(--line); display:block; margin-bottom:4px; }
+  h3 { margin:0; padding:0 16px 10px; font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); }
+  #toasts { position:fixed; right:16px; bottom:16px; display:flex; flex-direction:column; gap:8px; z-index:5; }
+  .toast { background:#222733; border:1px solid var(--line); border-left:3px solid var(--accent); padding:8px 12px; border-radius:6px; max-width:340px; }
+  .toast.bad { border-left-color:var(--danger); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Render Farm</h1>
+  <label>Scene <select id="scene"></select></label>
+  <label>Size <select id="size">
+    <option value="640x360">640×360</option><option value="960x540" selected>960×540</option>
+    <option value="1280x720">1280×720</option><option value="1920x1080">1920×1080</option>
+    <option value="768x768">768×768</option></select></label>
+  <label>Samples <select id="spp">
+    <option>16</option><option selected>64</option><option>256</option><option>1024</option><option>4096</option></select></label>
+  <button id="render" class="primary">Render</button>
+  <button id="stop">Stop</button>
+  <button id="kill" class="danger" title="Delete a random worker pod; its tiles time out and are re-rendered elsewhere">Kill a worker</button>
+  <label><input type="checkbox" id="nodes" checked> Node outlines</label>
+  <label><input type="checkbox" id="denoise"> Denoise</label>
+  <label>Exposure <input type="range" id="exposure" min="-3" max="3" step="0.1" value="0"></label>
+</header>
+<main>
+  <section>
+    <div id="stage">
+      <canvas id="img" width="960" height="540" aria-label="Rendered image; drag to orbit the camera, scroll to zoom"></canvas>
+      <canvas id="overlay" width="960" height="540"></canvas>
+      <div id="hint">drag to orbit · scroll to zoom · re-renders on release</div>
+    </div>
+    <div id="bar"><div></div></div>
+    <div id="status" role="status">Connecting…</div>
+  </section>
+  <aside>
+    <div class="card"><h2>Nodes</h2><div id="legend"><span style="color:var(--dim)">No workers yet</span></div></div>
+    <div class="card"><h2>Farm</h2><div id="farm" style="color:var(--dim)">—</div></div>
+  </aside>
+</main>
+<h3>Gallery</h3>
+<div id="gallery"></div>
+<div id="toasts" aria-live="polite"></div>
+<script>
+const $ = id => document.getElementById(id);
+const img = $('img'), ctx = img.getContext('2d'), ov = $('overlay'), octx = ov.getContext('2d');
+const PALETTE = ['#ff6b6b', '#4dd4ac', '#6ea8fe', '#ffd43b', '#da77f2', '#ff922b', '#a9e34b', '#66d9e8'];
+let scenes = [], job = null, hdr = null, imageData = null;
+let frameReady = false, queued = [];   // tile events that arrive while the full frame is loading
+let outlines = new Map();              // "x,y" -> {x,y,w,h,node,t,leased}
+let nodeNames = [], cam = null;
+
+function toast(msg, bad) {
+  const d = document.createElement('div');
+  d.className = 'toast' + (bad ? ' bad' : '');
+  d.textContent = msg;
+  $('toasts').append(d);
+  setTimeout(() => d.remove(), 6000);
+}
+function color(node) {
+  let i = nodeNames.indexOf(node);
+  if (i < 0) { nodeNames.push(node); nodeNames.sort(); i = nodeNames.indexOf(node); }
+  return PALETTE[i % PALETTE.length];
+}
+const fmt = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(0) + 'k' : Math.round(n);
+const clock = s => s < 0 ? '—' : Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+
+// Same curve as rt.Tonemap on the server: exposure, ACES fit, gamma 2.2.
+function exposure() { return (job ? job.exposure : 1) * Math.pow(2, +$('exposure').value); }
+function paint(x0, y0, w, h) {
+  if (!hdr) return;
+  const e = exposure(), W = job.w, d = imageData.data;
+  for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) {
+    const i = y * W + x;
+    for (let k = 0; k < 3; k++) {
+      let c = hdr[i * 3 + k] * e;
+      c = c * (2.51 * c + 0.03) / (c * (2.43 * c + 0.59) + 0.14);
+      d[i * 4 + k] = Math.pow(Math.min(1, c), 1 / 2.2) * 255 + 0.5;
+    }
+    d[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(imageData, 0, 0, x0, y0, w, h);
+}
+function decodeRGBE(bytes, x0, y0, w, h) {
+  const W = job.w;
+  for (let y = 0, o = 0; y < h; y++) for (let x = 0; x < w; x++, o += 4) {
+    const e = bytes[o + 3], f = e ? Math.pow(2, e - 136) : 0, i = ((y0 + y) * W + x0 + x) * 3;
+    hdr[i] = (bytes[o] + .5) * f; hdr[i + 1] = (bytes[o + 1] + .5) * f; hdr[i + 2] = (bytes[o + 2] + .5) * f;
+  }
+}
+function applyTile(t) {
+  if (!job || t.job !== job.id) return;
+  if ($('denoise').checked) return;   // the denoised frame is on screen; refreshed on a timer
+  const bin = atob(t.data), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  decodeRGBE(bytes, t.x, t.y, t.w, t.h);
+  paint(t.x, t.y, t.w, t.h);
+}
+async function loadFrame() {
+  if (!job) return;
+  const id = job.id, dn = $('denoise').checked;
+  const r = await fetch('api/frame' + (dn ? '?denoise=1' : ''));
+  if (!r.ok || !job || +r.headers.get('X-Job') !== id || dn !== $('denoise').checked) return;
+  decodeRGBE(new Uint8Array(await r.arrayBuffer()), 0, 0, job.w, job.h);
+  paint(0, 0, job.w, job.h);
+  frameReady = true;
+  queued.splice(0).forEach(applyTile);
+}
+function setJob(j) {
+  const fresh = !job || !j || job.id !== j.id;
+  job = j;
+  if (!j) { $('status').textContent = 'Idle — pick a scene and press Render.'; return; }
+  cam = { ...j.cam, target: { ...j.cam.target } };
+  $('scene').value = j.scene;
+  if (fresh) {
+    img.width = ov.width = j.w; img.height = ov.height = j.h;
+    hdr = new Float32Array(j.w * j.h * 3);
+    imageData = ctx.createImageData(j.w, j.h);
+    outlines.clear(); frameReady = false; queued = [];
+    loadFrame();
+  } else if (j.state === 'done' && $('denoise').checked) loadFrame();
+}
+
+// Overlay: each tile is outlined in the colour of the node that last rendered
+// it, flashes when it lands, and is dashed while leased.
+function drawOverlay(now) {
+  octx.clearRect(0, 0, ov.width, ov.height);
+  if ($('nodes').checked && job) {
+    for (const o of outlines.values()) {
+      const age = (now - o.t) / 1000;
+      octx.strokeStyle = color(o.node);
+      if (o.leased) {
+        if (age > 60) continue;
+        octx.setLineDash([4, 4]); octx.globalAlpha = .8;
+      } else {
+        octx.setLineDash([]);
+        const a = job.state === 'rendering' ? Math.max(.3, .8 - age / 4) : .2;
+        if (age < .6) { octx.fillStyle = color(o.node); octx.globalAlpha = .18 * (1 - age / .6); octx.fillRect(o.x, o.y, o.w, o.h); }
+        octx.globalAlpha = a;
+      }
+      octx.lineWidth = 1;
+      octx.strokeRect(o.x + .5, o.y + .5, o.w - 1, o.h - 1);
+    }
+    octx.globalAlpha = 1; octx.setLineDash([]);
+  }
+  requestAnimationFrame(drawOverlay);
+}
+requestAnimationFrame(drawOverlay);
+
+function showStats(s) {
+  const L = $('legend');
+  L.replaceChildren(...s.nodes.map(n => {
+    const d = document.createElement('div');
+    d.className = 'node' + (n.workers ? '' : ' dead');
+    d.innerHTML = '<span class="sw"></span><span class="name"></span><span class="sps"></span><span class="sub"></span>';
+    d.children[0].style.background = color(n.node);
+    d.children[1].textContent = n.node;
+    d.children[2].textContent = fmt(n.sps) + ' samples/s';
+    d.children[3].textContent = n.workers + (n.workers === 1 ? ' worker · ' : ' workers · ') + n.tiles + ' tiles';
+    return d;
+  }));
+  if (!s.nodes.length) L.innerHTML = '<span style="color:var(--dim)">No workers yet</span>';
+  $('farm').textContent = `${fmt(s.sps)} samples/s total · queue ${s.queue} tiles`;
+  if (!job) return;
+  $('bar').firstElementChild.style.width = (s.done * 100).toFixed(1) + '%';
+  const st = $('status');
+  st.innerHTML = '<b></b> · <span></span>';
+  st.children[0].textContent = `${s.spp} / ${s.target} spp`;
+  st.children[1].textContent = s.state === 'rendering'
+    ? `${(s.done * 100).toFixed(0)}% · elapsed ${clock(s.elapsed)} · ETA ${clock(s.eta)}`
+    : `${s.state} in ${clock(s.elapsed)} (${job.w}×${job.h})`;
+}
+
+function connect() {
+  const es = new EventSource('api/events');
+  const on = (name, fn) => es.addEventListener(name, e => fn(JSON.parse(e.data)));
+  on('job', setJob);
+  on('tile', t => {
+    outlines.set(t.x + ',' + t.y, { x: t.x, y: t.y, w: t.w, h: t.h, node: t.node, t: performance.now() });
+    frameReady ? applyTile(t) : queued.push(t);
+  });
+  on('lease', t => outlines.set(t.x + ',' + t.y, { ...t, t: performance.now(), leased: true }));
+  on('stats', showStats);
+  on('expired', e => toast(`Lease expired on ${e.node} — tile re-queued to ${e.to}`, true));
+  on('killed', e => toast(`Killed ${e.pod} on ${e.node}. Its tiles will time out and move to other nodes.`, true));
+  on('gallery', loadGallery);
+  es.onerror = () => { $('status').textContent = 'Reconnecting…'; };
+  es.onopen = () => { frameReady = false; };
+}
+
+async function post(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : null });
+  if (!r.ok) throw new Error((await r.text()).trim() || r.statusText);
+  return r;
+}
+function render(withCam) {
+  const [w, h] = $('size').value.split('x').map(Number);
+  post('api/render', { scene: $('scene').value, w, h, spp: +$('spp').value, cam: withCam ? cam : null })
+    .catch(e => toast('Render failed: ' + e.message, true));
+}
+$('render').onclick = () => render(job && job.scene === $('scene').value);
+$('scene').onchange = () => render(false);
+$('stop').onclick = () => post('api/stop').catch(e => toast(e.message, true));
+$('kill').onclick = () => post('api/kill').catch(e => toast('Kill failed: ' + e.message, true));
+$('exposure').oninput = () => job && paint(0, 0, job.w, job.h);
+$('denoise').onchange = loadFrame;
+setInterval(() => { if (job && job.state === 'rendering' && $('denoise').checked) loadFrame(); }, 5000);
+
+// Camera orbit: drag changes yaw/pitch, wheel changes distance; a new render
+// starts when the gesture ends.
+const stage = $('stage');
+let drag = null, wheelTimer = 0;
+stage.onpointerdown = e => { if (cam) { drag = { x: e.clientX, y: e.clientY, yaw: cam.yaw, pitch: cam.pitch, moved: false }; stage.setPointerCapture(e.pointerId); stage.classList.add('drag'); } };
+stage.onpointermove = e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag.moved = drag.moved || Math.abs(dx) + Math.abs(dy) > 4;
+  cam.yaw = drag.yaw - dx * 0.35;
+  cam.pitch = Math.max(-89, Math.min(89, drag.pitch + dy * 0.35));
+  $('hint').textContent = `yaw ${cam.yaw.toFixed(0)}° · pitch ${cam.pitch.toFixed(0)}° — release to render`;
+};
+stage.onpointerup = stage.onpointercancel = () => {
+  if (!drag) return;
+  stage.classList.remove('drag');
+  if (drag.moved) render(true);
+  drag = null;
+  $('hint').textContent = 'drag to orbit · scroll to zoom · re-renders on release';
+};
+stage.addEventListener('wheel', e => {
+  if (!cam) return;
+  e.preventDefault();
+  cam.dist = Math.max(0.05, Math.min(500, cam.dist * Math.pow(1.0015, e.deltaY)));
+  $('hint').textContent = `distance ${cam.dist.toFixed(2)}`;
+  clearTimeout(wheelTimer);
+  wheelTimer = setTimeout(() => render(true), 500);
+}, { passive: false });
+
+async function loadGallery() {
+  const items = await (await fetch('api/gallery')).json();
+  $('gallery').replaceChildren(...items.map(it => {
+    const a = document.createElement('a');
+    a.href = 'gallery/' + it.denoised; a.target = '_blank'; a.rel = 'noopener';
+    const im = document.createElement('img');
+    im.src = 'gallery/' + it.file; im.loading = 'lazy'; im.alt = `${it.scene} render, ${it.spp} spp`;
+    a.append(im, `${it.scene} · ${it.spp} spp · ${clock(it.seconds)} · ${it.w}×${it.h}`);
+    return a;
+  }));
+}
+
+(async () => {
+  scenes = await (await fetch('api/scenes')).json();
+  $('scene').replaceChildren(...scenes.map(s => new Option(s.title, s.name)));
+  connect();
+  loadGallery();
+})();
+</script>
+</body>
+</html>

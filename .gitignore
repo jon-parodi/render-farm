@@ -1,0 +1,6 @@
+# third-party assets are downloaded by assets/fetch.sh
+/assets/Sponza/
+/assets/Suzanne/
+/assets/*.hdr
+/renderfarm
+/out/
