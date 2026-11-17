@@ -16,7 +16,7 @@ type SceneInfo struct {
 
 var Scenes = []SceneInfo{
 	{"cornell", "Cornell box", Camera{Target: Vec{0, 1, 0}, Dist: 4.6, Fov: 35}, 1},
-	{"still", "Glass & metal still life", Camera{Target: Vec{0, 0.55, 0}, Yaw: 14, Pitch: 13, Dist: 5.2, Fov: 34, Aperture: 0.025}, 1},
+	{"still", "Glass & metal still life", Camera{Target: Vec{0, 0.55, 0}, Yaw: 14, Pitch: 13, Dist: 5.2, Fov: 34, Aperture: 0.025}, 0.75},
 	{"sponza", "Crytek Sponza", Camera{Target: Vec{0.5, 3, -0.2}, Yaw: -90, Pitch: -9, Dist: 9.5, Fov: 66}, 2.5},
 }
 

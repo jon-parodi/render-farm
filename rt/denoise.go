@@ -17,7 +17,7 @@ func Denoise(w, h int, buf []float32) []float32 {
 	kernel := [5]float32{1. / 16, 1. / 4, 3. / 8, 1. / 4, 1. / 16}
 	// compress HDR values before comparing so highlights don't defeat the colour weight
 	tm := func(v float32) float32 { return v / (1 + v) }
-	sigC := float32(1.5)
+	sigC := float32(1.0)
 	for it := 0; it < 5; it++ {
 		step := 1 << it
 		for y := 0; y < h; y++ {
