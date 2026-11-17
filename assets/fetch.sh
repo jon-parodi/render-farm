@@ -24,7 +24,7 @@ get https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/studio_small_09_2k.hdr 
 
 cd "$out"
 if [ -f "$sums" ]; then
-  sha256sum -c --quiet "$sums"
+  sha256sum -c "$sums" > /dev/null
 else
   find Sponza Suzanne studio.hdr -type f ! -name '.*' | sort | xargs sha256sum > "$sums"
   echo "wrote $sums"
